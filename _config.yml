@@ -11,7 +11,7 @@ root:             /
 author:
   name:           Igor Gorschal
   email:          gorschal@gmail.com
-  github:         neegor
+  github:         gorschal
 
 paginate:         5
 
