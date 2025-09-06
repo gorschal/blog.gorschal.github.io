@@ -6,6 +6,7 @@ categories:
   - Разработка
 tags:
   - architecture
+  - sql
   - sqlalchemy_core
   - sqlalchemy
   - python
