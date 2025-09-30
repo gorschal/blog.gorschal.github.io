@@ -9,8 +9,6 @@ tags:
   - uuid
 ---
 
-##
-
 _Перевод!!! [Первоисточник здесь.](https://abenezer.ca/blog/uuidv7-in-django)_
 
 <!--more-->
