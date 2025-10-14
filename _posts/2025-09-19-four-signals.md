@@ -29,7 +29,7 @@ tags:
 **Что измеряет**: Частота неудачных запросов/обработок.  
 **Метрики**:
 
-- HTTP: `http_requests_total` {status_code=~"5..|4.."}.
+- HTTP: `http_requests_total` {status_code=~"500"}.
 - gRPC: `grpc_server_requests_total` {grpc_code!="OK"}.
 - Общие: `exceptions_thrown_total` (по типам исключений).
 
