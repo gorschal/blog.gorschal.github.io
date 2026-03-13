@@ -1,6 +1,6 @@
 ---
 layout: post
-title: UUIDv7 в Django
+title: Контрольный список для логирования проекта
 excerpt_separator: <!--more-->
 categories:
   - Разработка
