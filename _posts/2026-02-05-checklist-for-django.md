@@ -17,18 +17,20 @@ tags:
 
 Бизнес-логика не должна находиться во `views` или `models`. Django MTV (Model-Template-View) паттерн должен расширяться до Service Layer для сложной логики.
 
-| Слой | Ответственность |
-|------|-----------------|
-| **Views** | Принять запрос, валидация входных данных (Serializer/Form), вызов Сервиса, возврат ответа. |
-| **Services** | Бизнес-логика, транзакции, оркестрация моделей. Не знают про HTTP (request/response). |
-| **Models** | Структура данных, методы уровня инстанса, простые запросы (QuerySets). |
-| **Selectors** | Сложные запросы на чтение (Getters/Fetchers), не меняют состояние БД. |
+| Слой          | Ответственность                                                                            |
+| ------------- | ------------------------------------------------------------------------------------------ |
+| **Views**     | Принять запрос, валидация входных данных (Serializer/Form), вызов Сервиса, возврат ответа. |
+| **Services**  | Бизнес-логика, транзакции, оркестрация моделей. Не знают про HTTP (request/response).      |
+| **Models**    | Структура данных, методы уровня инстанса, простые запросы (QuerySets).                     |
+| **Selectors** | Сложные запросы на чтение (Getters/Fetchers), не меняют состояние БД.                      |
 
 ### Инъекция зависимостей
+
 Сервисы не должны создаваться внутри вьюхи напрямую. Это делает код жестким и усложняет тестирование. Используйте явную передачу зависимостей.
 
 ### Управление транзакциями
-Операции, изменяющие несколько моделей или имеющие внешние побочные эффекты (API, кэш, письма), должны оборачиваться в `transaction.atomic()`. Письма и задачи отправляются *после* успешного коммита транзакции через `transaction.on_commit()`.
+
+Операции, изменяющие несколько моделей или имеющие внешние побочные эффекты (API, кэш, письма), должны оборачиваться в `transaction.atomic()`. Письма и задачи отправляются _после_ успешного коммита транзакции через `transaction.on_commit()`.
 
 ### Правильно (Service Layer)
 
@@ -45,19 +47,19 @@ class UserService:
             # Проверка существования
             if User.objects.filter(email=email).exists():
                 raise UserAlreadyExistsError(email)
-            
+
             user = User(email=email)
             user.set_password(password)
             user.save()
-            
+
             # Дополнительная бизнес-логика в рамках транзакции
             AuditLog.objects.create(action="user_created", user=user)
-            
+
             # Отправка письма только после успешного коммита
             transaction.on_commit(
                 lambda: send_welcome_email.delay(user.id)
             )
-            
+
             structlog.get_logger().info("user_created", user_id=user.id)
             return user
 
@@ -70,7 +72,7 @@ class SignupView(APIView):
     def post(self, request):
         serializer = SignupSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        
+
         user = self.user_service.create_user(
             email=serializer.validated_data['email'],
             password=serializer.validated_data['password']
@@ -88,11 +90,11 @@ def signup_view(request):
         email = request.POST.get('email')
         if User.objects.filter(email=email).exists():
             return JsonResponse({'error': 'Exists'}, status=400)
-        
+
         user = User(email=email)
         user.set_password(request.POST.get('password'))
         user.save()
-        
+
         send_welcome_email.delay(email)  # Прямой вызов здесь
         return JsonResponse({'status': 'ok'})
 ```
@@ -119,7 +121,7 @@ def order_list(request):
     ).prefetch_related(
         'items__product'
     ).all()
-    
+
     return render(request, 'orders.html', {'orders': orders})
 ```
 
@@ -171,9 +173,11 @@ def order_list(request):
 ## 3. Настройки и Окружение
 
 ### Разделение настроек
+
 Не вали все настройки в одну кучу. Разделяй их на осмысленные группы.
 
 ### Работа с временем
+
 Всегда держите `USE_TZ = True`. Используйте `from django.utils import timezone` и `timezone.now()` для получения текущего времени. Храните все даты в UTC.
 
 **Никогда не хардкодьте секреты!**
@@ -221,6 +225,7 @@ DEBUG = True  # В проде это дыра в безопасности
 3.  **Проверяйте SQL** перед применением: `python manage.py sqlmigrate app_name 0004`.
 
 ### Опасные операции
+
 Будьте осторожны с удалением полей и таблицами в продакшене. Django не делает `CASCADE` по умолчанию для некоторых БД, но может заблокировать таблицу на время изменения.
 
 ---
@@ -264,14 +269,15 @@ def create(self, request):
 
 ## 6. Безопасность (Security Checklist)
 
--   [ ] `DEBUG = False` в проде.
--   [ ] `SECURE_SSL_REDIRECT = True` (перенаправление на HTTPS).
--   [ ] `SESSION_COOKIE_SECURE = True` и `CSRF_COOKIE_SECURE = True`.
--   [ ] `SECURE_HSTS_SECONDS = 31536000` (HTTP Strict Transport Security).
--   [ ] Используйте `CORS` через `django-cors-headers` только для разрешенных доменов.
--   [ ] Никогда не передавайте ID сущностей в URL, если пользователю не положено их видеть. Используйте `UUID` или проверку прав доступа.
+- [ ] `DEBUG = False` в проде.
+- [ ] `SECURE_SSL_REDIRECT = True` (перенаправление на HTTPS).
+- [ ] `SESSION_COOKIE_SECURE = True` и `CSRF_COOKIE_SECURE = True`.
+- [ ] `SECURE_HSTS_SECONDS = 31536000` (HTTP Strict Transport Security).
+- [ ] Используйте `CORS` через `django-cors-headers` только для разрешенных доменов.
+- [ ] Никогда не передавайте ID сущностей в URL, если пользователю не положено их видеть. Используйте `UUID` или проверку прав доступа.
 
 ### Глобальная обработка исключений
+
 Используйте централизованный обработчик для трансляции бизнес-исключений в HTTP-ответы. Никогда не показывайте клиенту traceback в production.
 
 ```python
@@ -280,13 +286,13 @@ from rest_framework.views import exception_handler
 
 def custom_exception_handler(exc, context):
     response = exception_handler(exc, context)
-    
+
     if isinstance(exc, UserAlreadyExistsError):
         return Response(
             {'error': str(exc), 'code': 'user_already_exists'},
             status=status.HTTP_409_CONFLICT
         )
-    
+
     return response
 ```
 
