@@ -9,348 +9,267 @@ tags:
   - logging
 ---
 
-Данный текст описывает единые стандарты логирования для всех компонентов проекта.
-Соблюдение этих правил обеспечивает консистентность логов, упрощает отладку и мониторинг.
+# Чек-лист: Стандарты логирования (structlog)
+
+Данный документ описывает единые стандарты использования `structlog` в Python-проектах.
+Соблюдение правил обеспечивает консистентность JSON-логов, удобство поиска в ELK/Grafana Loki и чистоту кода.
 
 <!--more-->
 
-## 1. Стандарт уровней логирования
+## 1. Конфигурация: "Золотой стандарт" процессоров
 
-Используйте уровни логирования в соответствии с их назначением:
+Основа правильных логов — настройка пайплайна процессоров. Конфигурация должна обеспечивать одинаковый набор полей независимо от фреймворка.
 
-| Уровень | Когда использовать | Пример |
-|---------|-------------------|--------|
-| `logger.debug()` | Отладочная информация, промежуточные вычисления | Генерация токенов, SQL-запросы в dev-режиме |
-| `logger.info()` | Успешные бизнес-события | `user_created`, `payment_confirmed`, `domain_verified` |
-| `logger.warning()` | Ожидаемые проблемы, ошибки валидации | `validation_failed`, `retry_attempt`, `token_expired` |
-| `logger.error()` | Неожиданные ошибки, но обработанные | Сбой внешнего сервиса с fallback-логикой |
-| `logger.exception()` | **Только в `except`-блоках** с stacktrace | Любое исключение, требующее анализа |
+**Обязательные процессоры (порядок важен):**
 
-### Правильно
+1.  `structlog.contextvars.merge_contextvars` — внедряет контекст запроса/задачи.
+2.  `structlog.processors.add_log_level` — добавляет уровень (`info`, `error`).
+3.  `structlog.processors.StackInfoRenderer` — стек вызовов (если есть).
+4.  `structlog.processors.format_exc_info` — beautify исключений.
+5.  `structlog.processors.TimeStamper` — ISO-8601 UTC время.
+6.  `structlog.processors.UUIDRenderer` — для request_id (если используется).
 
-```python
-logger.debug("login_link_generated", uid_prefix=uid[:8], token_prefix=token[:4])
-logger.info("user_created", email=email)
-logger.warning("domain_validation_failed", reason="empty_domain")
-logger.error("email_backend_rejected")
-logger.exception("email_send_failed")  # внутри except
-```
-
-### Неправильно
-
-```python
-logger.info("evm_address_validation_failed")  # ← Должен быть warning!
-logger.exception("error", error=str(e))  # ← вне except-блока
-```
-
----
-
-## 2. Единый формат имён событий
-
-Имена событий должны быть в `snake_case` с глаголом в **прошедшем времени**.
-
-### Правильно
-
-```python
-"user_created"
-"payment_processed"
-"domain_verified"
-"validation_failed"
-"link_generated"
-"token_expired"
-```
-
-### Неправильно
-
-```python
-"userCreated"           # camelCase
-"create_user"           # глагол в настоящем времени
-"USER_CREATED"          # CONSTANT_CASE
-"user-create"           # kebab-case
-```
-
----
-
-## 3. Стандартизация контекстных полей
-
-Используйте единые имена для одинаковых сущностей во всём проекте.
-
-### Стандартные имена полей
-
-| Поле | Тип | Описание |
-|------|-----|----------|
-| `user_id` | UUID | ID пользователя (всегда `user_id`, не `user_pk`) |
-| `account_id` | UUID | ID аккаунта |
-| `domain` | str | Домен (без префиксов http/https) |
-| `amount` | str | Сумма (Decimal → str для JSON) |
-| `reason` | str | Причина ошибки |
-| `error` | str | Текст ошибки (только в `logger.exception()`) |
-
-### Правильно
-
-```python
-logger.info(
-    "payment_processed",
-    user_id=user.id,
-    account_id=account.id,
-    amount=str(amount),
-    reason="invalid_format",
-)
-```
-
-### Неправильно
-
-```python
-logger.info("error", user=user, pk=123, data=some_dict)  # ← слишком общо
-logger.info("payment", user_pk=pk, sum=amount)  # ← неправильные имена
-```
-
----
-
-## 4. Обработка исключений с контекстом
-
-### Общие правила
-
-1. **`logger.exception()`** использует **только внутри `except`-блоков**
-2. **Не дублируйте `error` и `error_type`** — structlog добавит stacktrace автоматически
-3. **Не логируйте чувствительные данные** (полные токены, пароли, email без маскировки)
-
-### Правильно
-
-```python
-# Поиск пользователя с обработкой ошибок
-try:
-    user = User.objects.get(pk=uid)
-except (TypeError, ValueError, OverflowError, User.DoesNotExist) as e:
-    logger.warning("invalid_uid", uidb64_prefix=uidb64[:8])  # ← только префикс
-    msg = "Invalid user identification"
-    raise UserCreationError(msg) from e
-
-# Отправка email с exception()
-try:
-    sent = self._do_send_email(email, login_url)
-except Exception as e:
-    logger.exception("email_send_failed")  # ← email уже в contextvars
-    raise UserCreationError("Failed to send login email") from e
-```
-
-### Неправильно
-
-```python
-# Избыточные поля в exception()
-logger.exception(
-    "safe_browsing_request_failed",
-    domain=domain,           # ← уже в contextvars
-    error_type=type(e).__name__,  # ← избыточно
-    error_message=str(e),    # ← избыточно
-)
-
-# Логирование вне except
-logger.exception("some_error", error=str(e))  # ← нет stacktrace!
-```
-
----
-
-## 5. Безопасность: маскировка чувствительных данных
-
-### Автоматическая маскировка
-
-В проекте настроен `mask_email_processor`, который автоматически маскирует email:
-
-```python
-logger.info("user_found", email="john.doe@example.com")
-# В логе: "email": "j***@example.com"
-```
-
-### Ручная маскировка токенов и идентификаторов
-
-**Никогда не логируйте полные токены, UID или секреты!**
-
-### Правильно
-
-```python
-logger.debug(
-    "login_link_generated",
-    uid_prefix=uid[:8],      # ← только префикс
-    token_prefix=token[:4],  # ← только префикс
-)
-
-logger.warning("invalid_uid", uidb64_prefix=uidb64[:8])
-```
-
-### Неправильно
-
-```python
-logger.debug("login_link", link=login_url)  # ← содержит полный токен!
-logger.info("user_uid", uid=uid)  # ← полный UID
-logger.debug("token", token=token)  # ← полный токен
-```
-
----
-
-## 6. Контекстные переменные (structlog.contextvars)
-
-Используйте `structlog.contextvars.bind_contextvars()` для автоматического добавления
-контекста ко всем последующим логам в рамках запроса/операции.
-
-### Правильно
-
-```python
-# В начале обработки запроса
-structlog.contextvars.bind_contextvars(email=email)
-# ... далее все логи автоматически получат email
-logger.info("auth_link_requested")  # ← будет с email в контексте
-logger.info("auth_link_sent")       # ← тоже с email
-
-# В сервисе верификации
-structlog.contextvars.bind_contextvars(domain=domain, verification_uuid_prefix=verification_uuid[:8])
-logger.info("txt_record_found")     # ← с domain и verification_uuid_prefix
-logger.warning("verification_mismatch")  # ← тоже с контекстом
-```
-
-### Где добавлять contextvars
-
-| Место | Какие переменные добавлять |
-|-------|---------------------------|
-| `AuthorizationView.form_valid()` | `email` |
-| `DomainVerificationService.verify_domain()` | `raw_domain`, `clean_domain` |
-| `DomainVerificationService.check_txt_record()` | `domain`, `verification_uuid_prefix` |
-| `validate_safe_domain()` | `domain` |
-| `AccountMetricsView.get()` | `account_id`, `account_domain` |
-
----
-
-## 7. Кастомные исключения для сервисного слоя
-
-Создавайте иерархию кастомных исключений для каждого сервиса.
-
-### Пример структуры
-
-```python
-# landing/services.py
-class UserCreationError(Exception):
-    """Базовое исключение для ошибок создания и управления пользователями."""
-    pass
-
-# dashboard/services.py
-class DomainVerificationError(Exception):
-    """Базовое исключение для ошибок верификации домена."""
-    pass
-
-# payment/services.py (требует создания)
-class PaymentProcessingError(Exception):
-    """Базовое исключение для ошибок обработки платежей."""
-    pass
-```
-
-### Использование
-
-```python
-# Правильно
-try:
-    result = DomainVerificationService.verify_domain(raw_domain, verification_uuid)
-except DomainVerificationError as e:
-    logger.warning("domain_verification_failed", reason=str(e))
-    messages.error(request, "Domain verification failed")
-
-# Неправильно
-try:
-    result = DomainVerificationService.verify_domain(raw_domain, verification_uuid)
-except Exception as e:
-    logger.exception("error")  # ← слишком общо
-    raise
-```
-
----
-
-## Шаблон для нового кода
+**Пример универсальной конфигурации:**
 
 ```python
 import structlog
 
-logger = structlog.get_logger(__name__)
+def setup_logging():
+    common_processors = [
+        structlog.contextvars.merge_contextvars,
+        structlog.processors.add_log_level,
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.format_exc_info,
+        structlog.processors.TimeStamper(fmt="iso", utc=True),
+        structlog.processors.ProcessorFormatter.wrap_for_formatter,
+    ]
 
-
-def process_payment(payment_id: str, amount: Decimal) -> bool:
-    """Обработка платежа.
-    
-    Args:
-        payment_id: ID платежа.
-        amount: Сумма платежа.
-    
-    Returns:
-        True если платеж успешен.
-    
-    Raises:
-        PaymentError: При ошибке обработки.
-    """
-    # 1. Добавляем контекст в начале
-    structlog.contextvars.bind_contextvars(payment_id=payment_id)
-    logger.info("payment_processing_started", amount=str(amount))
-    
-    # 2. Проверяем существование
-    try:
-        payment = Payment.objects.get(id=payment_id)
-    except Payment.DoesNotExist:
-        logger.warning("payment_not_found")
-        raise PaymentError("Payment not found")
-    
-    # 3. Валидация бизнес-логики
-    if amount <= 0:
-        logger.warning("payment_invalid_amount", amount=str(amount))
-        raise PaymentError("Invalid amount")
-    
-    # 4. Обработка с exception() только в except
-    try:
-        payment.process()
-    except Exception as e:
-        logger.exception("payment_processing_failed")
-        raise PaymentError("Processing error") from e
-    
-    # 5. Успешное завершение
-    logger.info("payment_processed_successfully")
-    return True
+    structlog.configure(
+        processors=common_processors + [
+            # В продакшене — JSON, локально — читаемый консольный вывод
+            structlog.processors.JSONRenderer() if not settings.DEBUG
+            else structlog.dev.ConsoleRenderer(colors=True),
+        ],
+        wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
+        cache_logger_on_first_use=True,
+    )
 ```
 
 ---
 
-## Чек-лист для код-ревью
+## 2. Уровни логирования и семантика
 
-Перед мержем проверьте:
+`structlog` использует стандартные уровни, но с акцентом на структурированные данные.
 
-- [ ] Используется правильный уровень логирования (warning для ошибок валидации)
-- [ ] Имя события в `snake_case` с глаголом в прошедшем времени
-- [ ] Контекстные переменные добавлены через `bind_contextvars()`
-- [ ] В `logger.exception()` нет дублирующих полей (`error`, `error_type`)
-- [ ] Чувствительные данные замаскированы (email, токены, UID)
-- [ ] Кастомные исключения используются вместо общего `Exception`
-- [ ] Нет полных токенов/секретов в логах (только префиксы)
+| Уровень     | Назначение                                                     | Пример события                                                         |
+| ----------- | -------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `debug`     | Технические детали для разработки. Отключается в проде.        | `sql_query_executed`, `cache_hit`                                      |
+| `info`      | **Бизнес-события**. Успешное завершение операций.              | `user_registered`, `order_created`, `task_completed`                   |
+| `warning`   | **Ожидаемые проблемы**. Некорректные данные, фоллбеки.         | `payment_gateway_timeout`, `invalid_input_data`, `deprecated_api_call` |
+| `error`     | Неожиданные ошибки, требующие внимания, но не краш приложения. | `external_api_error`, `email_send_failed`                              |
+| `exception` | Критические ошибки с трейсбеком (только внутри `except`).      | `unhandled_database_error`, `payment_processing_crash`                 |
 
 ---
 
-## Инструменты
+## 3. Именование событий (Event Names)
 
-### Проверка через ruff
+Имя события (первый аргумент) — это главный поисковый ключ. Человекочитаемое описание лучше выносить в отдельное поле.
 
-```bash
-# Проверка логов на наличие чувствительных данных
-ruff check --select LOG .
-```
+**Правила:**
 
-### Локальное тестирование
-
-В DEBUG-режиме логи выводятся в консоль с цветовой разметкой:
-
-```bash
-docker compose up  # логи в stdout
-```
-
-В production логи выводятся в JSON-формате для сбора ELK/Graylog:
+1.  Формат: `snake_case`.
+2.  Время: прошедшее (`user_created`, не `create_user`).
+3.  Стиль: констатирующий факт.
 
 ```python
-# core/settings/logging.py
-if DEBUG:
-    structlog_processors.append(structlog.dev.ConsoleRenderer())
-else:
-    structlog_processors.append(structlog.processors.JSONRenderer())
+# Правильно
+logger.info("user_created", user_id=user.id)
+logger.warning("cache_miss", key=cache_key)
+
+# Неправильно
+logger.info("User Created")  # Пробелы, заглавные буквы
+logger.info("create_user")   # Глагол в настоящем времени
+logger.info("error")         # Слишком общее имя
 ```
+
+---
+
+## 4. Работа с контекстом (ContextVars)
+
+Главная фича `structlog` — возможность привязать контекст ко всем логам в рамках запроса/задачи, не пробрасывая logger через аргументы функций.
+
+### Правила работы с контекстом:
+
+1.  **Инициализация:** В начале запроса (Middleware) очищайте и привязывайте базовые данные.
+2.  **Накопление:** В сервисах добавляйте специфичные данные по мере углубления.
+3.  **Очистка:** `structlog.contextvars.clear_contextvars()` вызывается в Middleware после завершения запроса.
+
+### Паттерны интеграции (Django / FastAPI / FastStream)
+
+**Django (Middleware):**
+
+```python
+import structlog
+
+class RequestLoggingMiddleware:
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        structlog.contextvars.bind_contextvars(request_id=str(uuid.uuid4()), user_id=request.user.id)
+        logger.info("http_request_started", path=request.path)
+
+        try:
+            response = self.get_response(request)
+            logger.info("http_request_finished", status_code=response.status_code)
+        except Exception:
+            logger.exception("http_request_failed")
+            raise
+        finally:
+            structlog.contextvars.clear_contextvars()
+
+        return response
+```
+
+**FastAPI (Middleware):**
+
+```python
+@app.middleware("http")
+async def logging_middleware(request: Request, call_next):
+    structlog.contextvars.bind_contextvars(request_id=request.headers.get("X-Request-ID"))
+    logger.info("http_request_started", method=request.method, path=request.url.path)
+
+    try:
+        response = await call_next(request)
+        logger.info("http_request_finished", status_code=response.status_code)
+    except Exception:
+        logger.exception("http_request_failed")
+        raise
+    finally:
+        structlog.contextvars.clear_contextvars()
+
+    return response
+```
+
+**FastStream (Broker Middleware):**
+
+```python
+from faststream import BaseMiddleware
+
+class LoggingMiddleware(BaseMiddleware):
+    async def on_consume(self, msg):
+        # Извлекаем ID из заголовков сообщения или генерируем
+        structlog.contextvars.bind_contextvars(
+            message_id=msg.message_id,
+            conversation_id=msg.headers.get("correlation_id")
+        )
+        logger.info("message_received", queue=msg.queue)
+        return await super().on_consume(msg)
+
+    async def after_processed(self, msg):
+        structlog.contextvars.clear_contextvars()
+```
+
+---
+
+## 5. Безопасность: маскировка данных
+
+Никогда не логируйте полные чувствительные данные.
+
+**Реализация через Процессор:**
+Лучший способ — добавить кастомный процессор в цепочку конфигурации, который маскирует данные автоматически.
+
+```python
+def mask_sensitive_data(logger, method_name, event_dict):
+    """Маскирует email и токены перед выводом."""
+    if "email" in event_dict:
+        email = event_dict["email"]
+        if isinstance(email, str) and "@" in email:
+            name, domain = email.split("@")
+            event_dict["email"] = f"{name[0]}***@{domain}"
+
+    if "token" in event_dict:
+        event_dict["token"] = "******"
+
+    # Обрезаем длинные строки (например, JWT)
+    if "jwt" in event_dict:
+        event_dict["jwt"] = event_dict["jwt"][:10] + "..."
+
+    return event_dict
+
+# Добавить в common_processors:
+# [mask_sensitive_data, ...]
+```
+
+**В коде:** Логируйте только префиксы или хеши.
+
+```python
+# Правильно
+logger.debug("token_generated", token_prefix=token[:8])
+
+# Неправильно
+logger.info("user_logged_in", token=token)
+```
+
+---
+
+## 6. Обработка исключений
+
+Главное правило: `logger.exception` автоматически добавляет поле `exception` с трейсбеком.
+
+**Анти-паттерны:**
+
+1.  Логировать `error=str(e)` внутри `logger.exception` — это дублирование.
+2.  Использовать `logger.error` внутри `except` без `exc_info=True` (лучше `logger.exception`).
+3.  Логировать одно и то же исключение на разных уровнях стека.
+
+**Правильный подход:**
+
+```python
+try:
+    process_payment()
+except PaymentGatewayError as e:
+    # exception() сам добавит stacktrace и тип ошибки.
+    # Добавляем только бизнес-контекст.
+    logger.exception("payment_gateway_unavailable", gateway=e.gateway_name)
+    raise  # Пробрасываем выше, если обработка не завершена
+except ValueError as e:
+    # Для ожидаемых ошибок часто достаточно warning
+    logger.warning("invalid_payment_data", reason=str(e))
+    return None
+```
+
+---
+
+## 7. Универсальные стандарты имен полей
+
+Для консистентности используйте единый словарь терминов.
+
+| Поле          | Тип | Описание                                         |
+| ------------- | --- | ------------------------------------------------ |
+| `request_id`  | str | UUID запроса (для трейсинга)                     |
+| `user_id`     | str | ID пользователя (не `user_pk`, не `uid`)         |
+| `duration_ms` | int | Длительность операции в миллисекундах            |
+| `status_code` | int | HTTP статус или код ошибки бизнес-логики         |
+| `error_code`  | str | Внутренний код ошибки (e.g., `VALIDATION_ERROR`) |
+| `reason`      | str | Человекочитаемая причина (кратко)                |
+
+---
+
+## Итоговый чек-лист для Code Review
+
+1.  **Конфигурация:**
+    - [ ] Используется `merge_contextvars` в процессорах.
+    - [ ] В проде используется `JSONRenderer`, в деве — `ConsoleRenderer`.
+    - [ ] Время логируется в UTC (`TimeStamper(fmt="iso")`).
+
+2.  **Код:**
+    - [ ] Импортирован `structlog`, логгер создан через `structlog.get_logger(__name__)`.
+    - [ ] Имя события в `snake_case` прошедшего времени.
+    - [ ] Используется `bind_contextvars` в начале запроса/задачи.
+    - [ ] Чувствительные данные (пароли, токены) отсутствуют или маскируются.
+    - [ ] В `logger.exception` нет ручного добавления `stacktrace` или `error=str(e)`.
+
+3.  **Контекст:**
+    - [ ] Есть `request_id` (или `correlation_id`) для связи логов микросервисов.
+    - [ ] `clear_contextvars()` вызывается в `finally` блоке или middleware.
