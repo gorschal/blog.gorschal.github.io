@@ -1,6 +1,6 @@
 ---
 layout: post
-title: Чек-лист для Fastapi
+title: Чек-лист для FastStram
 excerpt_separator: <!--more-->
 categories:
   - Разработка
