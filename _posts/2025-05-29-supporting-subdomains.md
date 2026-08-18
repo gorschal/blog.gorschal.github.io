@@ -37,6 +37,8 @@ tags:
 ### Реализация на Python
 
 ```python
+import datetime
+
 # Core Subdomain - Обработка заказов
 class Order:
     def __init__(self, order_id, customer_id, items, total_amount):

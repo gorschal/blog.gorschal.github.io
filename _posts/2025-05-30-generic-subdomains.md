@@ -40,7 +40,7 @@ Generic Subdomains - это:
 
 ```python
 from passlib.context import CryptContext
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import jwt
 
 # Конфигурация хеширования паролей
@@ -59,11 +59,13 @@ class AuthService:
     @staticmethod
     def create_access_token(data: dict, secret_key: str, expires_delta: timedelta) -> str:
         to_encode = data.copy()
-        expire = datetime.utcnow() + expires_delta
+        expire = datetime.now(timezone.utc) + expires_delta
         to_encode.update({"exp": expire})
         encoded_jwt = jwt.encode(to_encode, secret_key, algorithm="HS256")
         return encoded_jwt
 ```
+
+> **На заметку**: библиотека `passlib` больше не поддерживается авторами. Для новых проектов лучше использовать `pwdlib` или `argon2-cffi`, а готовые решения вроде `Auth0`/`Keycloak` — для полноценного Identity Provider.
 
 ### 2. Логирование (Logging)
 
@@ -155,6 +157,8 @@ class PdfReportService:
 
         pdf.output(output_file)
 ```
+
+> **На заметку**: ставьте `fpdf2` (активно поддерживаемый форк), а не старую библиотеку `fpdf` — она давно не обновляется. Установка: `pip install fpdf2`, импорт при этом остаётся `from fpdf import FPDF`.
 
 ## Интеграция Generic Subdomains в DDD-систему
 
